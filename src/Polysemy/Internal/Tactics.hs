@@ -18,6 +18,7 @@ module Polysemy.Internal.Tactics
 
 import Polysemy.Internal
 import Polysemy.Internal.Union
+import Data.Functor.Identity
 
 
 ------------------------------------------------------------------------------
@@ -71,14 +72,13 @@ import Polysemy.Internal.Union
 --
 -- Power users may explicitly use 'getInitialStateT' and 'bindT' to construct
 -- whatever data flow they'd like; although this is usually unnecessary.
-type Tactical e m r x = ∀ f. Functor f
-                          => Sem (WithTactics e f m r) (f x)
+type Tactical e m f r x = Sem (WithTactics e f m r) Identity (f x)
 
 type WithTactics e f m r = Tactics f m (e ': r) ': r
 
 data Tactics f n r m a where
   GetInitialState     :: Tactics f n r m (f ())
-  HoistInterpretation :: (a -> n b) -> Tactics f n r m (f a -> Sem r (f b))
+  HoistInterpretation :: (a -> n b) -> Tactics f n r m (f a -> Sem r f (f b))
   GetInspector        :: Tactics f n r m (Inspector f)
 
 
@@ -86,7 +86,7 @@ data Tactics f n r m a where
 -- | Get the stateful environment of the world at the moment the effect @e@ is
 -- to be run. Prefer 'pureT', 'runT' or 'bindT' instead of using this function
 -- directly.
-getInitialStateT :: forall f m r e. Sem (WithTactics e f m r) (f ())
+getInitialStateT :: forall f m r e. Sem (WithTactics e f m r) Identity (f ())
 getInitialStateT = send @(Tactics _ m (e ': r)) GetInitialState
 
 
@@ -112,7 +112,7 @@ getInitialStateT = send @(Tactics _ m (e ': r)) GetInitialState
 -- @
 --
 -- We
-getInspectorT :: forall e f m r. Sem (WithTactics e f m r) (Inspector f)
+getInspectorT :: forall e f m r. Sem (WithTactics e f m r) Identity (Inspector f)
 getInspectorT = send @(Tactics _ m (e ': r)) GetInspector
 
 
@@ -126,7 +126,7 @@ newtype Inspector f = Inspector
 
 ------------------------------------------------------------------------------
 -- | Lift a value into 'Tactical'.
-pureT :: a -> Tactical e m r a
+pureT :: Functor f => a -> Sem (WithTactics e f m r) Identity (f a)
 pureT a = do
   istate <- getInitialStateT
   pure $ a <$ istate
@@ -140,14 +140,13 @@ runT
     :: m a
       -- ^ The monadic action to lift. This is usually a parameter in your
       -- effect.
-    -> Sem (WithTactics e f m r)
-                (Sem (e ': r) (f a))
+    -> Sem (WithTactics e f m r) Identity
+                (Sem (e ': r) f (f a))
 runT na = do
   istate <- getInitialStateT
   na'    <- bindT (const na)
   pure $ na' istate
 {-# INLINE runT #-}
-
 
 ------------------------------------------------------------------------------
 -- | Lift a kleisli action into the stateful environment. You can use
@@ -160,8 +159,8 @@ bindT
        --
        -- Continuations lifted via 'bindT' will run in the same environment
        -- which produced the @a@.
-    -> Sem (WithTactics e f m r)
-                (f a -> Sem (e ': r) (f b))
+    -> Sem (WithTactics e f m r) Identity
+                (f a -> Sem (e ': r) f (f b))
 bindT f = send $ HoistInterpretation f
 {-# INLINE bindT #-}
 
@@ -172,8 +171,8 @@ bindT f = send $ HoistInterpretation f
 liftT
     :: forall m f r e a
      . Functor f
-    => Sem r a
-    -> Sem (WithTactics e f m r) (f a)
+    => Sem r Identity a
+    -> Sem (WithTactics e f m r) Identity (f a)
 liftT m = do
   a <- raise m
   pureT a
@@ -185,13 +184,13 @@ liftT m = do
 runTactics
    :: Functor f
    => f ()
-   -> (∀ x. f (m x) -> Sem r2 (f x))
+   -> (∀ x. f (m x) -> Sem r2 f (f x))
    -> (∀ x. f x -> Maybe x)
-   -> Sem (Tactics f m r2 ': r) a
-   -> Sem r a
+   -> Sem (Tactics f m r2 ': r) Identity a
+   -> Sem r f a
 runTactics s d v (Sem m) = m $ \u ->
   case decomp u of
-    Left x -> liftSem $ hoist (runTactics_b s d v) x
+    Left x -> _ $ liftSem $ hoist (runTactics_b s d v) x
     Right (Yo GetInitialState s' _ y _) ->
       pure $ y $ s <$ s'
     Right (Yo (HoistInterpretation na) s' _ y _) -> do
@@ -204,10 +203,10 @@ runTactics s d v (Sem m) = m $ \u ->
 runTactics_b
    :: Functor f
    => f ()
-   -> (∀ x. f (m x) -> Sem r2 (f x))
+   -> (∀ x. f (m x) -> Sem r2 f (f x))
    -> (∀ x. f x -> Maybe x)
-   -> Sem (Tactics f m r2 ': r) a
-   -> Sem r a
+   -> Sem (Tactics f m r2 ': r) Identity a
+   -> Sem r f a
 runTactics_b = runTactics
 {-# NOINLINE runTactics_b #-}
 

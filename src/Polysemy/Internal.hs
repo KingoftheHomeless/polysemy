@@ -22,8 +22,6 @@ module Polysemy.Internal
   , usingSem
   , liftSem
   , hoistSem
-  , (.@)
-  , (.@@)
   ) where
 
 import Control.Applicative
@@ -130,11 +128,11 @@ import Polysemy.Internal.Union
 -- use the ('Polysemy.Output.Output' 'Int') effect.
 --
 -- @since 0.1.2.0
-newtype Sem r a = Sem
+newtype Sem r f a = Sem
   { runSem
         :: ∀ m
          . Monad m
-        => (∀ x. Union r (Sem r) x -> m x)
+        => (∀ x. Union r f (Sem r f) x -> m x)
         -> m a
   }
 
@@ -178,19 +176,19 @@ type family Members es r :: Constraint where
 -- | Like 'runSem' but flipped for better ergonomics sometimes.
 usingSem
     :: Monad m
-    => (∀ x. Union r (Sem r) x -> m x)
-    -> Sem r a
+    => (∀ x. Union r f (Sem r f) x -> m x)
+    -> Sem r f a
     -> m a
 usingSem k m = runSem m k
 {-# INLINE usingSem #-}
 
 
-instance Functor (Sem f) where
+instance Functor (Sem r f) where
   fmap f (Sem m) = Sem $ \k -> fmap f $ m k
   {-# INLINE fmap #-}
 
 
-instance Applicative (Sem f) where
+instance Applicative (Sem r f) where
   pure a = Sem $ const $ pure a
   {-# INLINE pure #-}
 
@@ -198,7 +196,7 @@ instance Applicative (Sem f) where
   {-# INLINE (<*>) #-}
 
 
-instance Monad (Sem f) where
+instance Monad (Sem r f) where
   return = pure
   {-# INLINE return #-}
 
@@ -208,7 +206,7 @@ instance Monad (Sem f) where
   {-# INLINE (>>=) #-}
 
 
-instance (Member NonDet r) => Alternative (Sem r) where
+instance (Member NonDet r) => Alternative (Sem r Identity) where
   empty = send Empty
   {-# INLINE empty #-}
   a <|> b = do
@@ -218,12 +216,12 @@ instance (Member NonDet r) => Alternative (Sem r) where
   {-# INLINE (<|>) #-}
 
 -- | @since 0.2.1.0
-instance (Member NonDet r) => MonadPlus (Sem r) where
+instance (Member NonDet r) => MonadPlus (Sem r Identity) where
   mzero = empty
   mplus = (<|>)
 
 -- | @since 0.2.1.0
-instance (Member NonDet r) => MonadFail (Sem r) where
+instance (Member NonDet r) => MonadFail (Sem r Identity) where
   fail = const empty
 
 
@@ -231,36 +229,36 @@ instance (Member NonDet r) => MonadFail (Sem r) where
 -- | This instance will only lift 'IO' actions. If you want to lift into some
 -- other 'MonadIO' type, use this instance, and handle it via the
 -- 'Polysemy.IO.runIO' interpretation.
-instance (Member (Lift IO) r) => MonadIO (Sem r) where
+instance (Member (Lift IO) r) => MonadIO (Sem r Identity) where
   liftIO = sendM
   {-# INLINE liftIO #-}
 
-instance Member Fixpoint r => MonadFix (Sem r) where
+instance Member Fixpoint r => MonadFix (Sem r Identity) where
   mfix f = send $ Fixpoint f
   {-# INLINE mfix #-}
 
 
-liftSem :: Union r (Sem r) a -> Sem r a
+liftSem :: Union r f (Sem r f) a -> Sem r f a
 liftSem u = Sem $ \k -> k u
 {-# INLINE liftSem #-}
 
 
 hoistSem
-    :: (∀ x. Union r (Sem r) x -> Union r' (Sem r') x)
-    -> Sem r a
-    -> Sem r' a
+    :: (∀ x. Union r f (Sem r f) x -> Union r' f (Sem r' f) x)
+    -> Sem r f a
+    -> Sem r' f a
 hoistSem nat (Sem m) = Sem $ \k -> m $ \u -> k $ nat u
 {-# INLINE hoistSem #-}
 
 ------------------------------------------------------------------------------
 -- | Introduce an effect into 'Sem'. Analogous to
 -- 'Control.Monad.Class.Trans.lift' in the mtl ecosystem
-raise :: ∀ e r a. Sem r a -> Sem (e ': r) a
+raise :: ∀ e f r a. Sem r f a -> Sem (e ': r) f a
 raise = hoistSem $ hoist raise_b . weaken
 {-# INLINE raise #-}
 
 
-raise_b :: Sem r a -> Sem (e ': r) a
+raise_b :: Sem r f a -> Sem (e ': r) f a
 raise_b = raise
 {-# NOINLINE raise_b #-}
 
@@ -268,17 +266,17 @@ raise_b = raise
 ------------------------------------------------------------------------------
 -- | Like 'raise', but introduces a new effect underneath the head of the
 -- list.
-raiseUnder :: ∀ e2 e1 r a. Sem (e1 ': r) a -> Sem (e1 ': e2 ': r) a
+raiseUnder :: ∀ e2 e1 r f a. Sem (e1 ': r) f a -> Sem (e1 ': e2 ': r) f a
 raiseUnder = hoistSem $ hoist raiseUnder_b . weakenUnder
   where
-    weakenUnder :: ∀ m x. Union (e1 ': r) m x -> Union (e1 ': e2 ': r) m x
+    weakenUnder :: ∀ m x. Union (e1 ': r) f m x -> Union (e1 ': e2 ': r) f m x
     weakenUnder (Union SZ a) = Union SZ a
     weakenUnder (Union (SS n) a) = Union (SS (SS n)) a
     {-# INLINE weakenUnder #-}
 {-# INLINE raiseUnder #-}
 
 
-raiseUnder_b :: Sem (e1 ': r) a -> Sem (e1 ': e2 ': r) a
+raiseUnder_b :: Sem (e1 ': r) f a -> Sem (e1 ': e2 ': r) f a
 raiseUnder_b = raiseUnder
 {-# NOINLINE raiseUnder_b #-}
 
@@ -286,17 +284,17 @@ raiseUnder_b = raiseUnder
 ------------------------------------------------------------------------------
 -- | Like 'raise', but introduces two new effects underneath the head of the
 -- list.
-raiseUnder2 :: ∀ e2 e3 e1 r a. Sem (e1 ': r) a -> Sem (e1 ': e2 ': e3 ': r) a
+raiseUnder2 :: ∀ e2 e3 e1 f r a. Sem (e1 ': r) f a -> Sem (e1 ': e2 ': e3 ': r) f a
 raiseUnder2 = hoistSem $ hoist raiseUnder2_b . weakenUnder2
   where
-    weakenUnder2 ::  ∀ m x. Union (e1 ': r) m x -> Union (e1 ': e2 ': e3 ': r) m x
+    weakenUnder2 ::  ∀ m x. Union (e1 ': r) f m x -> Union (e1 ': e2 ': e3 ': r) f m x
     weakenUnder2 (Union SZ a) = Union SZ a
     weakenUnder2 (Union (SS n) a) = Union (SS (SS (SS n))) a
     {-# INLINE weakenUnder2 #-}
 {-# INLINE raiseUnder2 #-}
 
 
-raiseUnder2_b :: Sem (e1 ': r) a -> Sem (e1 ': e2 ': e3 ': r) a
+raiseUnder2_b :: Sem (e1 ': r) f a -> Sem (e1 ': e2 ': e3 ': r) f a
 raiseUnder2_b = raiseUnder2
 {-# NOINLINE raiseUnder2_b #-}
 
@@ -304,17 +302,20 @@ raiseUnder2_b = raiseUnder2
 ------------------------------------------------------------------------------
 -- | Like 'raise', but introduces two new effects underneath the head of the
 -- list.
-raiseUnder3 :: ∀ e2 e3 e4 e1 r a. Sem (e1 ': r) a -> Sem (e1 ': e2 ': e3 ': e4 ': r) a
+raiseUnder3
+    :: ∀ e2 e3 e4 e1 f r a
+     . Sem (e1 ': r) f a
+    -> Sem (e1 ': e2 ': e3 ': e4 ': r) f a
 raiseUnder3 = hoistSem $ hoist raiseUnder3_b . weakenUnder3
   where
-    weakenUnder3 ::  ∀ m x. Union (e1 ': r) m x -> Union (e1 ': e2 ': e3 ': e4 ': r) m x
+    weakenUnder3 ::  ∀ m x. Union (e1 ': r) f m x -> Union (e1 ': e2 ': e3 ': e4 ': r) f m x
     weakenUnder3 (Union SZ a) = Union SZ a
     weakenUnder3 (Union (SS n) a) = Union (SS (SS (SS (SS n)))) a
     {-# INLINE weakenUnder3 #-}
 {-# INLINE raiseUnder3 #-}
 
 
-raiseUnder3_b :: Sem (e1 ': r) a -> Sem (e1 ': e2 ': e3 ': e4 ': r) a
+raiseUnder3_b :: Sem (e1 ': r) f a -> Sem (e1 ': e2 ': e3 ': e4 ': r) f a
 raiseUnder3_b = raiseUnder3
 {-# NOINLINE raiseUnder3_b #-}
 
@@ -322,21 +323,21 @@ raiseUnder3_b = raiseUnder3
 ------------------------------------------------------------------------------
 -- | Lift an effect into a 'Sem'. This is used primarily via
 -- 'Polysemy.makeSem' to implement smart constructors.
-send :: Member e r => e (Sem r) a -> Sem r a
+send :: Member e r => e (Sem r Identity) a -> Sem r Identity a
 send = liftSem . inj
 {-# INLINE[3] send #-}
 
 
 ------------------------------------------------------------------------------
 -- | Lift a monadic action @m@ into 'Sem'.
-sendM :: Member (Lift m) r => m a -> Sem r a
+sendM :: Member (Lift m) r => m a -> Sem r Identity a
 sendM = send . Lift
 {-# INLINE sendM #-}
 
 
 ------------------------------------------------------------------------------
 -- | Run a 'Sem' containing no effects as a pure value.
-run :: Sem '[] a -> a
+run :: Sem '[] f a -> a
 run (Sem m) = runIdentity $ m absurdU
 {-# INLINE run #-}
 
@@ -344,7 +345,7 @@ run (Sem m) = runIdentity $ m absurdU
 ------------------------------------------------------------------------------
 -- | Lower a 'Sem' containing only a single lifted 'Monad' into that
 -- monad.
-runM :: Monad m => Sem '[Lift m] a -> m a
+runM :: (Functor f, Monad m) => Sem '[Lift m] f a -> m a
 runM (Sem m) = m $ \z ->
   case extract z of
     Yo e s _ f _ -> do
@@ -352,61 +353,8 @@ runM (Sem m) = m $ \z ->
       pure $ f $ a <$ s
 {-# INLINE runM #-}
 
+infect :: Functor f => Sem r Identity a -> Sem r f a
+infect (Sem m) = Sem $ \k -> m $ \u -> k $ infect2 $ hoist infect u
 
-------------------------------------------------------------------------------
--- | Some interpreters need to be able to lower down to the base monad (often
--- 'IO') in order to function properly --- some good examples of this are
--- 'Polysemy.Error.runErrorInIO' and 'Polysemy.Resource.runResourceInIO'.
---
--- However, these interpreters don't compose particularly nicely; for example,
--- to run 'Polysemy.Resource.runResourceInIO', you must write:
---
--- @
--- runM . runErrorInIO runM
--- @
---
--- Notice that 'runM' is duplicated in two places here. The situation gets
--- exponentially worse the more intepreters you have that need to run in this
--- pattern.
---
--- Instead, '.@' performs the composition we'd like. The above can be written as
---
--- @
--- (runM .@ runErrorInIO)
--- @
---
--- The parentheses here are important; without them you'll run into operator
--- precedence errors.
---
--- __Warning:__ This combinator will __duplicate work__ that is intended to be
--- just for initialization. This can result in rather surprising behavior. For
--- a version of '.@' that won't duplicate work, see the @.\@!@ operator in
--- <http://hackage.haskell.org/package/polysemy-zoo/docs/Polysemy-IdempotentLowering.html polysemy-zoo>.
-(.@)
-    :: Monad m
-    => (∀ x. Sem r x -> m x)
-       -- ^ The lowering function, likely 'runM'.
-    -> (∀ y. (∀ x. Sem r x -> m x)
-          -> Sem (e ': r) y
-          -> Sem r y)
-    -> Sem (e ': r) z
-    -> m z
-f .@ g = f . g f
-infixl 8 .@
-
-
-------------------------------------------------------------------------------
--- | Like '.@', but for interpreters which change the resulting type --- eg.
--- 'Polysemy.Error.runErrorInIO'.
-(.@@)
-    :: Monad m
-    => (∀ x. Sem r x -> m x)
-       -- ^ The lowering function, likely 'runM'.
-    -> (∀ y. (∀ x. Sem r x -> m x)
-          -> Sem (e ': r) y
-          -> Sem r (f y))
-    -> Sem (e ': r) z
-    -> m (f z)
-f .@@ g = f . g f
-infixl 8 .@@
-
+infect2 :: Functor f => Union r Identity (Sem r f) x  -> Union r f (Sem r f) x
+infect2 (Union w (Yo a b c d e)) = Union w $ Yo a undefined undefined undefined _
