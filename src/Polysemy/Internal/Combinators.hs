@@ -1,4 +1,4 @@
-{-# LANGUAGE AllowAmbiguousTypes   #-}
+{-# LANGUAGE AllowAmbiguousTypes, BangPatterns   #-}
 
 {-# OPTIONS_HADDOCK not-home #-}
 
@@ -28,7 +28,8 @@ import           Polysemy.Internal
 import           Polysemy.Internal.CustomErrors
 import           Polysemy.Internal.Tactics
 import           Polysemy.Internal.Union
-
+import Data.Typeable
+import Data.Proxy
 
 ------------------------------------------------------------------------------
 -- | A lazier version of 'Data.Tuple.swap'.
@@ -73,7 +74,7 @@ interpretH
 interpretH f (Sem m) = m $ \u ->
   case decomp u of
     Left  x -> liftSem $ hoist (interpretH f) x
-    Right (Weaving e s d y v) -> do
+    Right (Weaving e s d _ y v) -> do
       a <- runTactics s d v $ f e
       pure $ y a
 {-# INLINE interpretH #-}
@@ -83,21 +84,39 @@ interpretH f (Sem m) = m $ \u ->
 -- | A highly-performant combinator for interpreting an effect statefully. See
 -- 'stateful' for a more user-friendly variety of this function.
 interpretInStateT
-    :: (∀ x m. e m x -> S.StateT s (Sem r) x)
+    :: forall e s a r
+    .  Typeable e
+    => Maybe (Recovery e ((,) s))
+    -> (∀ x m. e m x -> S.StateT s (Sem r) x)
     -> s
     -> Sem (e ': r) a
     -> Sem r (s, a)
-interpretInStateT f s (Sem m) = Sem $ \k ->
-  fmap swap $ flip S.runStateT s $ m $ \u ->
-    case decomp u of
-        Left x -> S.StateT $ \s' ->
-          k . fmap swap
-            . weave (s', ())
-                    (uncurry $ interpretInStateT f)
-                    (Just . snd)
+interpretInStateT r f s (Sem m) =
+  let
+    wv :: forall x. s -> Union r (Sem (e ': r)) x -> Union r (Sem r) (s, x)
+    !wv = case r of
+      Just (Recovery rc) -> \s' ->
+        weaveR
+          (s', ())
+          (uncurry $ interpretInStateT r f)
+          (Just . snd)
+          (Proxy :: Proxy '[e])
+          rc
+      _ -> \s' ->
+        weave
+          (s', ())
+          (uncurry $ interpretInStateT r f)
+          (Just . snd)
+  in
+    Sem $ \k ->
+      fmap swap $ flip S.runStateT s $ m $ \u ->
+        case decomp u of
+          Left x -> S.StateT $ \s' ->
+              k . fmap swap
+              . wv s'
             $ x
-        Right (Weaving e z _ y _) ->
-          fmap (y . (<$ z)) $ S.mapStateT (usingSem k) $ f e
+          Right (Weaving e z _ _ y _) ->
+            fmap (y . (<$ z)) $ S.mapStateT (usingSem k) $ f e
 {-# INLINE interpretInStateT #-}
 
 
@@ -118,7 +137,7 @@ interpretInLazyStateT f s (Sem m) = Sem $ \k ->
                     (uncurry $ interpretInLazyStateT f)
                     (Just . snd)
             $ x
-        Right (Weaving e z _ y _) ->
+        Right (Weaving e z _ _ y _) ->
           fmap (y . (<$ z)) $ LS.mapStateT (usingSem k) $ f e
 {-# INLINE interpretInLazyStateT #-}
 
@@ -126,11 +145,13 @@ interpretInLazyStateT f s (Sem m) = Sem $ \k ->
 ------------------------------------------------------------------------------
 -- | Like 'interpret', but with access to an intermediate state @s@.
 stateful
-    :: (∀ x m. e m x -> s -> Sem r (s, x))
+    :: Typeable e
+    => Maybe (Recovery e ((,) s))
+    -> (∀ x m. e m x -> s -> Sem r (s, x))
     -> s
     -> Sem (e ': r) a
     -> Sem r (s, a)
-stateful f = interpretInStateT $ \e -> S.StateT $ fmap swap . f e
+stateful r f = interpretInStateT r $ \e -> S.StateT $ fmap swap . f e
 {-# INLINE[3] stateful #-}
 
 
@@ -158,7 +179,7 @@ reinterpretH
 reinterpretH f (Sem m) = Sem $ \k -> m $ \u ->
   case decompCoerce u of
     Left x  -> k $ hoist (reinterpretH f) $ x
-    Right (Weaving e s d y v) -> do
+    Right (Weaving e s d _ y v) -> do
       a <- usingSem k $ runTactics s (raiseUnder . d) v $ f e
       pure $ y a
 {-# INLINE[3] reinterpretH #-}
@@ -195,7 +216,7 @@ reinterpret2H
 reinterpret2H f (Sem m) = Sem $ \k -> m $ \u ->
   case decompCoerce u of
     Left x  -> k $ weaken $ hoist (reinterpret2H f) $ x
-    Right (Weaving e s d y v) -> do
+    Right (Weaving e s d _ y v) -> do
       a <- usingSem k $ runTactics s (raiseUnder2 . d) v $ f e
       pure $ y a
 {-# INLINE[3] reinterpret2H #-}
@@ -227,7 +248,7 @@ reinterpret3H
 reinterpret3H f (Sem m) = Sem $ \k -> m $ \u ->
   case decompCoerce u of
     Left x  -> k . weaken . weaken . hoist (reinterpret3H f) $ x
-    Right (Weaving e s d y v) -> do
+    Right (Weaving e s d _ y v) -> do
       a <- usingSem k $ runTactics s (raiseUnder3 . d) v $ f e
       pure $ y a
 {-# INLINE[3] reinterpret3H #-}
@@ -278,7 +299,7 @@ interceptH
     -> Sem r a
 interceptH f (Sem m) = Sem $ \k -> m $ \u ->
   case prj u of
-    Just (Weaving e s d y v) ->
+    Just (Weaving e s d _ y v) ->
       usingSem k $ fmap y $ runTactics s (raise . d) v $ f e
     Nothing -> k $ hoist (interceptH f) u
 {-# INLINE interceptH #-}

@@ -30,7 +30,7 @@ data PolysemyStuff (l :: LookupState) = PolysemyStuff
 polysemyStuffLocations :: PolysemyStuff 'Locations
 polysemyStuffLocations = PolysemyStuff
   { findClass    = ("Polysemy.Internal.Union",                  "Find")
-  , semTyCon     = ("Polysemy.Internal",                        "Sem")
+  , semTyCon     = ("Polysemy.Internal.Union",                  "Sem")
   , ifStuckTyCon = ("Polysemy.Internal.CustomErrors.Redefined", "IfStuck")
   , indexOfTyCon = ("Polysemy.Internal.Union",                  "IndexOf")
   }

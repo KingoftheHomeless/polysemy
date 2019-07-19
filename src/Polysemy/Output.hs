@@ -15,6 +15,7 @@ module Polysemy.Output
   ) where
 
 import Data.Bifunctor (first)
+import Data.Typeable
 import Polysemy
 import Polysemy.State
 import Control.Monad (when)
@@ -33,7 +34,8 @@ makeSem ''Output
 -- | Run an 'Output' effect by transforming it into a list of its values.
 runOutputList
     :: forall o r a
-     . Sem (Output o ': r) a
+     . Typeable o
+    => Sem (Output o ': r) a
     -> Sem r ([o], a)
 runOutputList = fmap (first reverse) . runState [] . reinterpret
   (\case
@@ -45,7 +47,7 @@ runOutputList = fmap (first reverse) . runState [] . reinterpret
 -- | Run an 'Output' effect by transforming it into a monoid.
 runOutputMonoid
     :: forall o m r a
-     . Monoid m
+     . (Monoid m, Typeable m)
     => (o -> m)
     -> Sem (Output o ': r) a
     -> Sem r (m, a)
@@ -74,7 +76,7 @@ ignoreOutput = interpret $ \case
 -- @since 0.1.2.0
 runOutputBatched
     :: forall o r a
-     . Member (Output [o]) r
+     . (Member (Output [o]) r, Typeable o)
     => Int
     -> Sem (Output o ': r) a
     -> Sem r a

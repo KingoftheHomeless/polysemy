@@ -23,6 +23,7 @@ module Polysemy.State
 
 import qualified Control.Monad.Trans.State as S
 import           Data.IORef
+import           Data.Typeable
 import           Data.Tuple (swap)
 import           Polysemy
 import           Polysemy.Internal
@@ -59,8 +60,8 @@ modify f = do
 
 ------------------------------------------------------------------------------
 -- | Run a 'State' effect with local state.
-runState :: s -> Sem (State s ': r) a -> Sem r (s, a)
-runState = stateful $ \case
+runState :: Typeable s => s -> Sem (State s ': r) a -> Sem r (s, a)
+runState = stateful (Just $ Recovery $ \(s, a) -> a <$ put s) $ \case
   Get   -> \s -> pure (s, s)
   Put s -> const $ pure (s, ())
 {-# INLINE[3] runState #-}
@@ -68,7 +69,7 @@ runState = stateful $ \case
 
 ------------------------------------------------------------------------------
 -- | Run a 'State' effect with local state.
-evalState :: s -> Sem (State s ': r) a -> Sem r a
+evalState :: Typeable s => s -> Sem (State s ': r) a -> Sem r a
 evalState s = fmap snd . runState s
 {-# INLINE evalState #-}
 
@@ -121,15 +122,10 @@ hoistStateIntoStateT (Sem m) = m $ \u ->
                                   $ S.runStateT m' s')
                       (Just . snd)
               $ hoist hoistStateIntoStateT x
-    Right (Weaving Get z _ y _)     -> fmap (y . (<$ z)) $ S.get
-    Right (Weaving (Put s) z _ y _) -> fmap (y . (<$ z)) $ S.put s
+    Right (Weaving Get z _ _ y _)     -> fmap (y . (<$ z)) $ S.get
+    Right (Weaving (Put s) z _ _ y _) -> fmap (y . (<$ z)) $ S.put s
 {-# INLINE hoistStateIntoStateT #-}
 
-
-{-# RULES "runState/reinterpret"
-   forall s e (f :: forall m x. e m x -> Sem (State s ': r) x).
-     runState s (reinterpret f e) = stateful (\x s' -> runState s' $ f x) s e
-     #-}
 
 {-# RULES "runLazyState/reinterpret"
    forall s e (f :: forall m x. e m x -> Sem (State s ': r) x).

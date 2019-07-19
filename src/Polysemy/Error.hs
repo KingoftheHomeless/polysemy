@@ -69,17 +69,21 @@ fromEitherM = fromEither <=< embed
 -- | Run an 'Error' effect in the style of
 -- 'Control.Monad.Trans.Except.ExceptT'.
 runError
-    :: Sem (Error e ': r) a
+    :: forall e a r
+    .  Typeable e
+    => Sem (Error e ': r) a
     -> Sem r (Either e a)
 runError (Sem m) = Sem $ \k -> E.runExceptT $ m $ \u ->
   case decomp u of
     Left x -> E.ExceptT $ k $
-      weave (Right ())
+      weaveR (Right ())
             (either (pure . Left) runError)
             hush
+            (Proxy :: Proxy '[Error e])
+            (either throw pure)
             x
-    Right (Weaving (Throw e) _ _ _ _) -> E.throwE e
-    Right (Weaving (Catch try handle) s d y _) ->
+    Right (Weaving (Throw e) _ _ _ _ _) -> E.throwE e
+    Right (Weaving (Catch try handle) s d _ y _) ->
       E.ExceptT $ usingSem k $ do
         ma <- runError $ d $ try <$ s
         case ma of
@@ -99,7 +103,7 @@ runError (Sem m) = Sem $ \k -> E.runExceptT $ m $ \u ->
 -- @since 0.2.2.0
 mapError
   :: forall e1 e2 r a
-   . Member (Error e2) r
+   . (Typeable e1, Member (Error e2) r)
   => (e1 -> e2)
   -> Sem (Error e1 ': r) a
   -> Sem r a

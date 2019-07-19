@@ -131,7 +131,7 @@ spec = do
 
   describe "Output effect" $ do
     it "should unify recursively with tyvars" $ do
-      flipShouldBe 11 . sum . fst . run . runOutputMonoid id $ do
+      flipShouldBe (11 :: Int) . sum . fst . run . runOutputMonoid id $ do
         output [1]
         output $ replicate 2 5
 

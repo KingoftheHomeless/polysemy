@@ -82,7 +82,7 @@ plugin = defaultPlugin
 ------------------------------------------------------------------------------
 #if __GLASGOW_HASKELL__ >= 810
 polysemyInternal :: ModuleName
-polysemyInternal = mkModuleName "Polysemy.Internal"
+polysemyInternal = mkModuleName "Polysemy.Internal.Union"
 #endif
 
 ------------------------------------------------------------------------------

@@ -36,142 +36,8 @@ import Data.Kind
 import Polysemy.Internal.Fixpoint
 import Polysemy.Embed.Type
 import Polysemy.Internal.NonDet
-import Polysemy.Internal.PluginLookup
 import Polysemy.Internal.Union
 
-
-------------------------------------------------------------------------------
--- | The 'Sem' monad handles computations of arbitrary extensible effects.
--- A value of type @Sem r@ describes a program with the capabilities of
--- @r@. For best results, @r@ should always be kept polymorphic, but you can
--- add capabilities via the 'Member' constraint.
---
--- The value of the 'Sem' monad is that it allows you to write programs
--- against a set of effects without a predefined meaning, and provide that
--- meaning later. For example, unlike with mtl, you can decide to interpret an
--- 'Polysemy.Error.Error' effect tradtionally as an 'Either', or instead
--- significantly faster as an 'IO' 'Control.Exception.Exception'. These
--- interpretations (and others that you might add) may be used interchangably
--- without needing to write any newtypes or 'Monad' instances. The only
--- change needed to swap interpretations is to change a call from
--- 'Polysemy.Error.runError' to 'Polysemy.Error.lowerError'.
---
--- The effect stack @r@ can contain arbitrary other monads inside of it. These
--- monads are lifted into effects via the 'Embed' effect. Monadic values can be
--- lifted into a 'Sem' via 'embed'.
---
--- A 'Sem' can be interpreted as a pure value (via 'run') or as any
--- traditional 'Monad' (via 'runM'). Each effect @E@ comes equipped with some
--- interpreters of the form:
---
--- @
--- runE :: 'Sem' (E ': r) a -> 'Sem' r a
--- @
---
--- which is responsible for removing the effect @E@ from the effect stack. It
--- is the order in which you call the interpreters that determines the
--- monomorphic representation of the @r@ parameter.
---
--- After all of your effects are handled, you'll be left with either
--- a @'Sem' '[] a@ or a @'Sem' '[ 'Embed' m ] a@ value, which can be
--- consumed respectively by 'run' and 'runM'.
---
--- ==== Examples
---
--- As an example of keeping @r@ polymorphic, we can consider the type
---
--- @
--- 'Member' ('Polysemy.State.State' String) r => 'Sem' r ()
--- @
---
--- to be a program with access to
---
--- @
--- 'Polysemy.State.get' :: 'Sem' r String
--- 'Polysemy.State.put' :: String -> 'Sem' r ()
--- @
---
--- methods.
---
--- By also adding a
---
--- @
--- 'Member' ('Polysemy.Error' Bool) r
--- @
---
--- constraint on @r@, we gain access to the
---
--- @
--- 'Polysemy.Error.throw' :: Bool -> 'Sem' r a
--- 'Polysemy.Error.catch' :: 'Sem' r a -> (Bool -> 'Sem' r a) -> 'Sem' r a
--- @
---
--- functions as well.
---
--- In this sense, a @'Member' ('Polysemy.State.State' s) r@ constraint is
--- analogous to mtl's @'Control.Monad.State.Class.MonadState' s m@ and should
--- be thought of as such. However, /unlike/ mtl, a 'Sem' monad may have
--- an arbitrary number of the same effect.
---
--- For example, we can write a 'Sem' program which can output either
--- 'Int's or 'Bool's:
---
--- @
--- foo :: ( 'Member' ('Polysemy.Output.Output' Int) r
---        , 'Member' ('Polysemy.Output.Output' Bool) r
---        )
---     => 'Sem' r ()
--- foo = do
---   'Polysemy.Output.output' @Int  5
---   'Polysemy.Output.output' True
--- @
---
--- Notice that we must use @-XTypeApplications@ to specify that we'd like to
--- use the ('Polysemy.Output.Output' 'Int') effect.
---
--- @since 0.1.2.0
-newtype Sem r a = Sem
-  { runSem
-        :: ∀ m
-         . Monad m
-        => (∀ x. Union r (Sem r) x -> m x)
-        -> m a
-  }
-
-
-------------------------------------------------------------------------------
--- | Due to a quirk of the GHC plugin interface, it's only easy to find
--- transitive dependencies if they define an orphan instance. This orphan
--- instance allows us to find "Polysemy.Internal" in the polysemy-plugin.
-instance PluginLookup Plugin
-
-
-------------------------------------------------------------------------------
--- | Makes constraints of functions that use multiple effects shorter by
--- translating single list of effects into multiple 'Member' constraints:
---
--- @
--- foo :: 'Members' \'[ 'Polysemy.Output.Output' Int
---                 , 'Polysemy.Output.Output' Bool
---                 , 'Polysemy.State' String
---                 ] r
---     => 'Sem' r ()
--- @
---
--- translates into:
---
--- @
--- foo :: ( 'Member' ('Polysemy.Output.Output' Int) r
---        , 'Member' ('Polysemy.Output.Output' Bool) r
---        , 'Member' ('Polysemy.State' String) r
---        )
---     => 'Sem' r ()
--- @
---
--- @since 0.1.2.0
-type family Members es r :: Constraint where
-  Members '[]       r = ()
-  Members (e ': es) r = (Member e r, Members es r)
 
 
 ------------------------------------------------------------------------------
@@ -185,27 +51,6 @@ usingSem k m = runSem m k
 {-# INLINE usingSem #-}
 
 
-instance Functor (Sem f) where
-  fmap f (Sem m) = Sem $ \k -> fmap f $ m k
-  {-# INLINE fmap #-}
-
-
-instance Applicative (Sem f) where
-  pure a = Sem $ const $ pure a
-  {-# INLINE pure #-}
-
-  Sem f <*> Sem a = Sem $ \k -> f k <*> a k
-  {-# INLINE (<*>) #-}
-
-
-instance Monad (Sem f) where
-  return = pure
-  {-# INLINE return #-}
-
-  Sem ma >>= f = Sem $ \k -> do
-    z <- ma k
-    runSem (f z) k
-  {-# INLINE (>>=) #-}
 
 
 instance (Member NonDet r) => Alternative (Sem r) where
@@ -326,7 +171,7 @@ run (Sem m) = runIdentity $ m absurdU
 runM :: Monad m => Sem '[Embed m] a -> m a
 runM (Sem m) = m $ \z ->
   case extract z of
-    Weaving e s _ f _ -> do
+    Weaving e s _ _ f _ -> do
       a <- unEmbed e
       pure $ f $ a <$ s
 {-# INLINE runM #-}

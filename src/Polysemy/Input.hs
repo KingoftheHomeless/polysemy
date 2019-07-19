@@ -13,6 +13,7 @@ module Polysemy.Input
   , runInputSem
   ) where
 
+import Data.Typeable
 import Data.Foldable (for_)
 import Data.List (uncons)
 import Polysemy
@@ -39,7 +40,8 @@ runInputConst c = interpret $ \case
 -- | Run an 'Input' effect by providing a different element of a list each
 -- time. Returns 'Nothing' after the list is exhausted.
 runInputList
-    :: [i]
+    :: Typeable i
+    => [i]
     -> Sem (Input (Maybe i) ': r) a
     -> Sem r a
 runInputList is = fmap snd . runState is . reinterpret

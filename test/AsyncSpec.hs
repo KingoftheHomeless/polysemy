@@ -8,11 +8,14 @@ import Polysemy
 import Polysemy.Async
 import Polysemy.State
 import Polysemy.Trace
+import Polysemy.Fork
+import Polysemy.Final
 import Test.Hspec
-
 
 spec :: Spec
 spec = describe "async" $ do
+  -- Don't judge me
+  test2 >>= print
   it "should thread state and not lock" $ do
     (ts, (s, r)) <- runM
                   . runTraceList
@@ -21,7 +24,6 @@ spec = describe "async" $ do
       let message :: Member Trace r => Int -> String -> Sem r ()
           message n msg = trace $ mconcat
             [ show n, "> ", msg ]
-
       a1 <- async $ do
           v <- get @String
           message 1 v
