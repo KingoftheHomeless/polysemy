@@ -1,4 +1,4 @@
-{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TemplateHaskell, BangPatterns #-}
 
 module Polysemy.State
   ( -- * Effect
@@ -25,6 +25,7 @@ import qualified Control.Monad.Trans.State as S
 import           Data.IORef
 import           Data.Tuple (swap)
 import           Polysemy
+import           Polysemy.Internal.Fixpoint
 import           Polysemy.Internal
 import           Polysemy.Internal.Combinators
 import           Polysemy.Internal.Union
@@ -64,6 +65,30 @@ runState = stateful $ \case
   Get   -> \s -> pure (s, s)
   Put s -> const $ pure (s, ())
 {-# INLINE[3] runState #-}
+
+
+------------------------------------------------------------------------------
+-- | Run a 'State' effect with local state, which is processed /backwards/.
+runBackwardsState :: Member Fixpoint r
+                  => s
+                  -> Sem (State s ': r) a
+                  -> Sem r (s, a)
+runBackwardsState = backwardsStateful $ \case
+  Get   -> \s -> pure (s, s)
+  Put s -> const $ pure (s, ())
+{-# INLINE[3] runBackwardsState #-}
+
+------------------------------------------------------------------------------
+-- | Run a 'State' effect with local state, which is processed /backwards/
+-- lazily.
+runLazyBackwardsState :: Member Fixpoint r
+                      => s
+                      -> Sem (State s ': r) a
+                      -> Sem r (s, a)
+runLazyBackwardsState = lazilyBackwardsStateful $ \case
+  Get   -> \s -> pure (s, s)
+  Put s -> const $ pure (s, ())
+{-# INLINE[3] runLazyBackwardsState #-}
 
 
 ------------------------------------------------------------------------------
@@ -140,3 +165,13 @@ hoistStateIntoStateT (Sem m) = m $ \u ->
      runLazyState s (reinterpret f e) = lazilyStateful (\x s' -> runLazyState s' $ f x) s e
      #-}
 
+
+{-# RULES "runBackwardsState/reinterpret"
+   forall s e (f :: forall m x. e m x -> Sem (State s ': r) x).
+     runBackwardsState s (reinterpret f e) = backwardsStateful (\x s' -> runBackwardsState s' $ f x) s e
+     #-}
+
+{-# RULES "runLazyBackwardsState/reinterpret"
+   forall s e (f :: forall m x. e m x -> Sem (State s ': r) x).
+     runLazyBackwardsState s (reinterpret f e) = lazilyBackwardsStateful (\x s' -> runLazyBackwardsState s' $ f x) s e
+     #-}

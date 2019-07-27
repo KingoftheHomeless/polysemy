@@ -1,4 +1,6 @@
 {-# LANGUAGE AllowAmbiguousTypes   #-}
+{-# LANGUAGE RecursiveDo   #-}
+{-# LANGUAGE BangPatterns   #-}
 
 {-# OPTIONS_HADDOCK not-home #-}
 
@@ -20,10 +22,15 @@ module Polysemy.Internal.Combinators
     -- * Statefulness
   , stateful
   , lazilyStateful
+  , backwardsStateful
+  , lazilyBackwardsStateful
   ) where
 
+import           Control.Monad
+import           Control.Monad.Fix
 import qualified Control.Monad.Trans.State.Lazy as LS
 import qualified Control.Monad.Trans.State.Strict as S
+import           Polysemy.Internal.Fixpoint
 import           Polysemy.Internal
 import           Polysemy.Internal.CustomErrors
 import           Polysemy.Internal.Tactics
@@ -100,6 +107,73 @@ interpretInStateT f s (Sem m) = Sem $ \k ->
           fmap (y . (<$ z)) $ S.mapStateT (usingSem k) $ f e
 {-# INLINE interpretInStateT #-}
 
+newtype RevStateT s m a = RevStateT { runRevStateT :: s -> m (s, a) }
+  deriving (Functor)
+
+instance MonadFix m => Applicative (RevStateT s m) where
+  pure a = RevStateT $ \s -> pure (s, a)
+  (<*>) = ap
+
+instance MonadFix m => Monad (RevStateT s m) where
+  m >>= f = RevStateT $ \s -> do
+    rec
+      (s'', a) <- runRevStateT m s'
+      (s', b)  <- runRevStateT (f a) s
+    return (s'', b)
+
+
+newtype LazyRevStateT s m a = LazyRevStateT { runLazyRevStateT :: s -> m (s, a) }
+  deriving (Functor)
+
+instance MonadFix m => Applicative (LazyRevStateT s m) where
+  pure a = LazyRevStateT $ \s -> pure (s, a)
+  (<*>) = ap
+
+instance MonadFix m => Monad (LazyRevStateT s m) where
+  m >>= f = LazyRevStateT $ \s -> do
+    rec
+      ~(s'', a) <- runLazyRevStateT m s'
+      ~(s', b)  <- runLazyRevStateT (f a) s
+    return (s'', b)
+
+interpretInRevStateT
+    :: Member Fixpoint r
+    => (∀ x m. e m x -> RevStateT s (Sem r) x)
+    -> s
+    -> Sem (e ': r) a
+    -> Sem r (s, a)
+interpretInRevStateT f s (Sem sem) = (`runRevStateT` s) $
+  sem $ \u -> case decomp u of
+  Left x -> RevStateT $ \s' ->
+      liftSem $
+        weave
+        (s', ())
+        (uncurry $ interpretInRevStateT f)
+        (Just . snd)
+        x
+  Right (Weaving e z _ y _) ->
+    y . (<$ z) <$> f e
+{-# INLINE interpretInRevStateT #-}
+
+
+interpretInLazyRevStateT
+    :: Member Fixpoint r
+    => (∀ x m. e m x -> LazyRevStateT s (Sem r) x)
+    -> s
+    -> Sem (e ': r) a
+    -> Sem r (s, a)
+interpretInLazyRevStateT f s (Sem sem) = (`runLazyRevStateT` s) $
+  sem $ \u -> case decomp u of
+  Left x -> LazyRevStateT $ \s' ->
+      liftSem $
+        weave
+        (s', ())
+        (uncurry $ interpretInLazyRevStateT f)
+        (Just . snd)
+        x
+  Right (Weaving e z _ y _) ->
+    y . (<$ z) <$> f e
+{-# INLINE interpretInLazyRevStateT #-}
 
 ------------------------------------------------------------------------------
 -- | A highly-performant combinator for interpreting an effect statefully. See
@@ -130,9 +204,10 @@ stateful
     -> s
     -> Sem (e ': r) a
     -> Sem r (s, a)
-stateful f = interpretInStateT $ \e -> S.StateT $ fmap swap . f e
+stateful f = interpretInStateT $ \e -> S.StateT $ \s -> do
+  (!s', a) <- f e s
+  return (a, s')
 {-# INLINE[3] stateful #-}
-
 
 ------------------------------------------------------------------------------
 -- | Like 'interpret', but with access to an intermediate state @s@.
@@ -143,6 +218,32 @@ lazilyStateful
     -> Sem r (s, a)
 lazilyStateful f = interpretInLazyStateT $ \e -> LS.StateT $ fmap swap . f e
 {-# INLINE[3] lazilyStateful #-}
+
+
+------------------------------------------------------------------------------
+-- | Like 'interpret', but with access to an intermediate state @s@ which
+-- is processed /backwards/, from last action to first.
+backwardsStateful
+    :: Member Fixpoint r
+    => (∀ x m. e m x -> s -> Sem r (s, x))
+    -> s
+    -> Sem (e ': r) a
+    -> Sem r (s, a)
+backwardsStateful f = interpretInRevStateT $ \s -> RevStateT (f s)
+{-# INLINE[3] backwardsStateful #-}
+
+------------------------------------------------------------------------------
+-- | Like 'interpret', but with access to an intermediate state @s@ which
+-- is processed /backwards/, from last action to first.
+lazilyBackwardsStateful
+    :: Member Fixpoint r
+    => (∀ x m. e m x -> s -> Sem r (s, x))
+    -> s
+    -> Sem (e ': r) a
+    -> Sem r (s, a)
+lazilyBackwardsStateful f = interpretInLazyRevStateT $ \s -> LazyRevStateT (f s)
+{-# INLINE[3] lazilyBackwardsStateful #-}
+
 
 
 ------------------------------------------------------------------------------

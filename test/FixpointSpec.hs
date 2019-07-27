@@ -2,7 +2,7 @@
 {-# LANGUAGE RecursiveDo #-}
 module FixpointSpec where
 
-import Control.Exception (try, evaluate)
+import Control.Exception (evaluate)
 import Control.Monad.Fix
 
 import Polysemy
@@ -25,7 +25,7 @@ runFinalState :: Member Fixpoint r
 runFinalState s sm = mfix $ \ ~(s', _) ->
   interpret
     (\GetEventualState -> pure s')
-    (runState s sm)
+    (runLazyState s sm)
 
 test1 :: (String, (Int, ()))
 test1 =
@@ -38,6 +38,19 @@ test1 =
   s' <- getEventualState @Int
   output @Int s
   output @Int s'
+  put @Int 2
+
+test1' :: (Int, (String, ()))
+test1' =
+    run
+  . runFixpoint run
+  . runFinalState 1
+  . runOutputMonoid (show @Int)
+  $ do
+  s  <- get @Int
+  s' <- getEventualState @Int
+  output @Int s'
+  output @Int s
   put @Int 2
 
 test2 :: Either [Int] [Int]
@@ -64,7 +77,7 @@ test4 :: (Int, Either () Int)
 test4 =
     run
   . runFixpoint run
-  . runLazyState @Int 1
+  . runState @Int 1
   . runError
   $ mdo
   put a
@@ -74,8 +87,9 @@ test4 =
 
 spec :: Spec
 spec = parallel $ describe "runFixpoint" $ do
-  it "should work with runState" $ do
+  it "should work with runLazyState" $ do
     test1 `shouldBe` ("12",  (2, ()))
+    test1' `shouldBe` (2, ("21", ()))
   it "should work with runError" $ do
     let res = fmap (take 10) test2
     res `shouldBe` Right (take 10 $ cycle [1,2])
