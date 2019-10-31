@@ -69,7 +69,7 @@ interpret = firstOrder interpretH
 --
 -- See the notes on 'Tactical' for how to use this function.
 interpretH
-    :: (∀ x m . e m x -> Tactical e m r x)
+    :: (∀ x m . Monad m => e m x -> Tactical e m r x)
        -- ^ A natural transformation from the handled effect to other effects
        -- already in 'Sem'.
     -> Sem (e ': r) a
@@ -156,7 +156,7 @@ lazilyStateful f = interpretInLazyStateT $ \e -> LS.StateT $ fmap swap . f e
 -- See the notes on 'Tactical' for how to use this function.
 reinterpretH
     :: forall e1 e2 r a
-     . (∀ m x. e1 m x -> Tactical e1 m (e2 ': r) x)
+     . (∀ m x. Monad m => e1 m x -> Tactical e1 m (e2 ': r) x)
        -- ^ A natural transformation from the handled effect to the new effect.
     -> Sem (e1 ': r) a
     -> Sem (e2 ': r) a
@@ -193,7 +193,7 @@ reinterpret = firstOrder reinterpretH
 -- See the notes on 'Tactical' for how to use this function.
 reinterpret2H
     :: forall e1 e2 e3 r a
-     . (∀ m x. e1 m x -> Tactical e1 m (e2 ': e3 ': r) x)
+     . (∀ m x. Monad m => e1 m x -> Tactical e1 m (e2 ': e3 ': r) x)
        -- ^ A natural transformation from the handled effect to the new effects.
     -> Sem (e1 ': r) a
     -> Sem (e2 ': e3 ': r) a
@@ -225,7 +225,7 @@ reinterpret2 = firstOrder reinterpret2H
 -- See the notes on 'Tactical' for how to use this function.
 reinterpret3H
     :: forall e1 e2 e3 e4 r a
-     . (∀ m x. e1 m x -> Tactical e1 m (e2 ': e3 ': e4 ': r) x)
+     . (∀ m x. Monad m => e1 m x -> Tactical e1 m (e2 ': e3 ': e4 ': r) x)
        -- ^ A natural transformation from the handled effect to the new effects.
     -> Sem (e1 ': r) a
     -> Sem (e2 ': e3 ': e4 ': r) a
@@ -275,7 +275,7 @@ intercept f = interceptH $ \(e :: e m x) -> liftT @m $ f e
 -- See the notes on 'Tactical' for how to use this function.
 interceptH
     :: Member e r
-    => (∀ x m. e m x -> Tactical e m r x)
+    => (∀ x m. Monad m => e m x -> Tactical e m r x)
        -- ^ A natural transformation from the handled effect to other effects
        -- already in 'Sem'.
     -> Sem r a
@@ -296,7 +296,7 @@ interceptH f (Sem m) = Sem $ \k -> m $ \u ->
 -- @since 1.2.3.0
 rewrite
     :: forall e1 e2 r a
-     . (forall m x. e1 m x -> e2 m x)
+     . (forall m x. Monad m => e1 m x -> e2 m x)
     -> Sem (e1 ': r) a
     -> Sem (e2 ': r) a
 rewrite f (Sem m) = Sem $ \k -> m $ \u ->
@@ -313,7 +313,7 @@ rewrite f (Sem m) = Sem $ \k -> m $ \u ->
 transform
     :: forall e1 e2 r a
      . Member e2 r
-    => (forall m x. e1 m x -> e2 m x)
+    => (forall m x. Monad m => e1 m x -> e2 m x)
     -> Sem (e1 ': r) a
     -> Sem r a
 transform f (Sem m) = Sem $ \k -> m $ \u ->

@@ -1,4 +1,4 @@
-{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TemplateHaskell, TupleSections #-}
 
 module Polysemy.Resource
   ( -- * Effect
@@ -19,7 +19,7 @@ module Polysemy.Resource
 
 import qualified Control.Exception as X
 import           Polysemy
-import           Polysemy.Final
+import qualified Polysemy.Final.IO as FinalIO
 
 
 ------------------------------------------------------------------------------
@@ -84,7 +84,7 @@ onException act end = bracketOnError (pure ()) (const end) (const act)
 -- Notably, unlike 'resourceToIO', this is not consistent with
 -- 'Polysemy.State.State' unless 'Polysemy.State.runStateInIORef' is used.
 -- State that seems like it should be threaded globally throughout 'bracket's
--- /will not be./
+-- /will not be/ if an exception is throw.
 --
 -- Use 'resourceToIO' instead if you need to run
 -- pure, stateful interpreters after the interpreter for 'Resource'.
@@ -95,32 +95,57 @@ onException act end = bracketOnError (pure ()) (const end) (const act)
 resourceToIOFinal :: Member (Final IO) r
                   => Sem (Resource ': r) a
                   -> Sem r a
-resourceToIOFinal = interpretFinal $ \case
+-- KingoftheHomeless: This is implemented such that we preserve
+-- global and local effects as much as possible. This can lead to
+-- strange interactions. See table below for details.
+resourceToIOFinal = interpretH $ \case
   Bracket alloc dealloc use -> do
-    a <- runS  alloc
-    d <- bindS dealloc
-    u <- bindS use
-    pure $ X.bracket a d u
+    a        <- resourceToIOFinal     <$> runT alloc
+    dFailure <- (resourceToIOFinal .) <$> bindT dealloc
+    dSuccess <- (resourceToIOFinal .)
+             <$> bindT (\(resource, res) -> res <$ dealloc resource)
+    u        <- (resourceToIOFinal .)
+             <$> bindT (\resource -> (resource,) <$> use resource)
+    ins      <- getInspectorT
+    raise $ FinalIO.mask $ \restore -> do
+      resource <- a
+      res      <- restore (u resource) `FinalIO.onException` dFailure resource
+      case inspect ins res of
+        Just _ -> dSuccess res
+        _      -> fmap snd res <$ dFailure resource
 
   BracketOnError alloc dealloc use -> do
-    ins <- getInspectorS
-    a <- runS  alloc
-    d <- bindS dealloc
-    u <- bindS use
-    pure $
-      X.bracketOnError
-        a
-        d
-        (\x -> do
-          result <- u x
-          case inspect ins result of
-            Just _ -> pure result
-            Nothing -> do
-              _ <- d x
-              pure result
-        )
-
+    a   <- resourceToIOFinal     <$> runT alloc
+    d   <- (resourceToIOFinal .) <$> bindT dealloc
+    u   <- (resourceToIOFinal .) <$> bindT use
+    ins <- getInspectorT
+    raise $ FinalIO.mask $ \restore -> do
+      resource <- a
+      res <- restore (u resource) `FinalIO.onException` d resource
+      case inspect ins res of
+        Just _ -> pure res
+        _      -> res <$ d resource
 {-# INLINE resourceToIOFinal #-}
+
+{-
+KingoftheHomeless:
+Here's a table of how effects of
+@bracket alloc dealloc use@ or @bracketOnError alloc dealloc use@
+are lost depending on what kind of exception @use@ throws:
+
+                                             Failure Type
+
+                      | IO exception  | Pure global exception | Pure local exception |
+         _____________|_______________|_______________________|______________________|
+               IO     | All preserved |     All preserved     |     All preserved    |
+         _____________|_______________|_______________________|______________________|
+  Effect  Pure global |    All lost   |  dealloc effects lost |     All preserved    |
+   Type  _____________|_______________|_______________________|______________________|
+           Pure local |    All lost   |        All lost       | dealloc effects lost |
+         _____________|_______________|_______________________|______________________|
+
+If no exception is thrown, then all effects will be preserved.
+-}
 
 
 ------------------------------------------------------------------------------
@@ -169,15 +194,17 @@ runResource
     -> Sem r a
 runResource = interpretH $ \case
   Bracket alloc dealloc use -> do
-    a <- runT  alloc
-    d <- bindT dealloc
-    u <- bindT use
-
+    a        <- runT  alloc
+    dFailure <- bindT dealloc
+    dSuccess <- bindT (\(resource, res) -> res <$ dealloc resource)
+    u        <- bindT (\resource -> (resource,) <$> use resource)
+    ins      <- getInspectorT
     let run_it = raise . runResource
     resource <- run_it a
     result <- run_it $ u resource
-    _ <- run_it $ d resource
-    pure result
+    case inspect ins result of
+      Just _  -> run_it (dSuccess result)
+      Nothing -> fmap snd result <$ run_it (dFailure resource)
 
   BracketOnError alloc dealloc use -> do
     a <- runT  alloc
@@ -221,38 +248,39 @@ resourceToIO
     => Sem (Resource ': r) a
     -> Sem r a
 resourceToIO = interpretH $ \case
-  Bracket a b c -> do
-    ma <- runT a
-    mb <- bindT b
-    mc <- bindT c
+  Bracket alloc dealloc use -> do
+    a        <- runT alloc
+    dFailure <- bindT dealloc
+    dSuccess <- bindT (\(resource, res) -> res <$ dealloc resource)
+    u        <- bindT (\resource -> (resource,) <$> use resource)
+    ins      <- getInspectorT
 
     withLowerToIO $ \lower finish -> do
       let done :: Sem (Resource ': r) x -> IO x
           done = lower . raise . resourceToIO
-      X.bracket
-          (done ma)
-          (\x -> done (mb x) >> finish)
-          (done . mc)
+      X.mask $ \restore -> do
+        resource <- done a
+        res <- restore (done (u resource))
+               `X.onException` (done (dFailure resource) <* finish)
+        case inspect ins res of
+          Just _ -> done (dSuccess res) <* finish
+          _      -> fmap snd res <$ done (dFailure resource) <* finish
 
-  BracketOnError a b c -> do
+  BracketOnError alloc dealloc use -> do
+    a   <- runT alloc
+    d   <- bindT dealloc
+    u   <- bindT use
     ins <- getInspectorT
-    ma <- runT a
-    mb <- bindT b
-    mc <- bindT c
 
     withLowerToIO $ \lower finish -> do
       let done :: Sem (Resource ': r) x -> IO x
           done = lower . raise . resourceToIO
-      X.bracketOnError
-          (done ma)
-          (\x -> done (mb x) >> finish)
-          (\x -> do
-            result <- done $ mc x
-            case inspect ins result of
-              Just _ -> pure result
-              Nothing -> do
-                _ <- done $ mb x
-                pure result
-          )
+      X.mask $ \restore -> do
+        resource <- done a
+        res <- restore (done (u resource))
+               `X.onException` (done (d resource) <* finish)
+        case inspect ins res of
+          Just _ -> pure res
+          _      -> res <$ done (d resource) <* finish
 {-# INLINE resourceToIO #-}
 

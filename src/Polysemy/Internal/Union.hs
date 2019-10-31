@@ -64,7 +64,7 @@ instance Functor (Union r m) where
 
 data Weaving e m a where
   Weaving
-    :: Functor f
+    :: (Functor f, Monad m)
     =>   { weaveEffect :: e m a
          -- ^ The original effect GADT originally lifted via
          -- 'Polysemy.Internal.send'. There is an invariant that @m ~ Sem r0@,
@@ -233,7 +233,7 @@ weaken (Union n a) = Union (SS n) a
 
 ------------------------------------------------------------------------------
 -- | Lift an effect @e@ into a 'Union' capable of holding it.
-inj :: forall e r m a. (Functor m , Member e r) => e m a -> Union r m a
+inj :: forall e r m a. (Monad m , Member e r) => e m a -> Union r m a
 inj e = injWeaving $
   Weaving e (Identity ())
             (fmap Identity . runIdentity)

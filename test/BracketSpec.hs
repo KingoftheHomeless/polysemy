@@ -1,6 +1,7 @@
 module BracketSpec where
 
 import Control.Monad
+import Data.Either
 import Polysemy
 import Polysemy.Error
 import Polysemy.Output
@@ -137,6 +138,93 @@ spec = parallel $ do
         put "goodbye 1"
       )
 
+  describe "How effects are dropped by exceptions:" $ do
+    let
+        bracketPreserveAllOnNoError        = ["alloc pure", "use pure", "dealloc pure"]
+        bracketOnErrorPreserveAllOnNoError = ["alloc pure", "use pure"]
+
+        preserveAllOn str = [ "alloc " ++ str, "use " ++ str, "dealloc " ++ str ]
+        loseDeallocOn str = [ "alloc " ++ str, "use " ++ str ]
+        loseAllOn _str    = []
+    it "runResource bracket/OnError only protects against pure local exceptions." $ do
+      let
+          iosShouldBe =
+                loseDeallocOn "IO"
+            ++  loseDeallocOn "global"
+            ++  preserveAllOn "local"
+
+          globalsShouldBe =
+                loseAllOn "IO"
+            ++  loseDeallocOn "global"
+            ++  preserveAllOn "local"
+
+          localsShouldBe =
+                loseAllOn "IO"
+            ++  loseAllOn "global"
+            ++  loseDeallocOn "local"
+      runTest4Expecting (runTest4Pure test4Bracket) $ \ios globals locals -> do
+        ios `shouldBe` bracketPreserveAllOnNoError ++ iosShouldBe
+        globals `shouldBe` bracketPreserveAllOnNoError ++ globalsShouldBe
+        locals `shouldBe` bracketPreserveAllOnNoError ++ localsShouldBe
+
+      runTest4Expecting (runTest4Pure test4BracketOnError) $ \ios globals locals -> do
+        ios `shouldBe` bracketOnErrorPreserveAllOnNoError ++ iosShouldBe
+        globals `shouldBe` bracketOnErrorPreserveAllOnNoError ++ globalsShouldBe
+        locals `shouldBe` bracketOnErrorPreserveAllOnNoError ++ localsShouldBe
+
+    it "resourceToIO bracket/OnError protects against IO and pure local exceptions, \
+       \ but not pure global ones." $ do
+      let
+          iosShouldBe =
+                preserveAllOn "IO"
+            ++  loseDeallocOn "global"
+            ++  preserveAllOn "local"
+
+          globalsShouldBe =
+                loseAllOn "IO"
+            ++  loseDeallocOn "global"
+            ++  preserveAllOn "local"
+
+          localsShouldBe =
+                loseAllOn "IO"
+            ++  loseAllOn "global"
+            ++  loseDeallocOn "local"
+      runTest4Expecting (runTest4Forklift test4Bracket) $ \ios globals locals -> do
+        ios `shouldBe` bracketPreserveAllOnNoError ++ iosShouldBe
+        globals `shouldBe` bracketPreserveAllOnNoError ++ globalsShouldBe
+        locals `shouldBe` bracketPreserveAllOnNoError ++ localsShouldBe
+
+      runTest4Expecting (runTest4Forklift test4BracketOnError) $ \ios globals locals -> do
+        ios `shouldBe` bracketOnErrorPreserveAllOnNoError ++ iosShouldBe
+        globals `shouldBe` bracketOnErrorPreserveAllOnNoError ++ globalsShouldBe
+        locals `shouldBe` bracketOnErrorPreserveAllOnNoError ++ localsShouldBe
+
+    it "resourceToIOFinal bracket/OnError protects against all kinds of exceptions. \
+       \ Effects are preserved according to the table." $ do
+      let
+          iosShouldBe =
+                preserveAllOn "IO"
+            ++  preserveAllOn "global"
+            ++  preserveAllOn "local"
+
+          globalsShouldBe =
+                loseAllOn "IO"
+            ++  loseDeallocOn "global"
+            ++  preserveAllOn "local"
+
+          localsShouldBe =
+                loseAllOn "IO"
+            ++  loseAllOn "global"
+            ++  loseDeallocOn "local"
+      runTest4Expecting (runTest4Final test4Bracket) $ \ios globals locals -> do
+        ios `shouldBe` bracketPreserveAllOnNoError ++ iosShouldBe
+        globals `shouldBe` bracketPreserveAllOnNoError ++ globalsShouldBe
+        locals `shouldBe` bracketPreserveAllOnNoError ++ localsShouldBe
+
+      runTest4Expecting (runTest4Final test4BracketOnError) $ \ios globals locals -> do
+        ios `shouldBe` bracketOnErrorPreserveAllOnNoError ++ iosShouldBe
+        globals `shouldBe` bracketOnErrorPreserveAllOnNoError ++ globalsShouldBe
+        locals `shouldBe` bracketOnErrorPreserveAllOnNoError ++ localsShouldBe
 
 ------------------------------------------------------------------------------
 
@@ -216,3 +304,189 @@ withTransaction m =
     (trace "beginning transaction")
     (const $ trace "rolling back transaction")
     (const $ m <* trace "committing transaction")
+
+
+
+runTest4Expecting
+  :: IO ([String], Either String ([String], Either Bool ([String], Either () ())))
+  -> ([String] -> [String] -> [String] -> Expectation)
+  -> Expectation
+runTest4Expecting testRun expectations = do
+  (ioEffs, rest) <- testRun
+  rest `shouldSatisfy` isRight
+  case rest of
+    Right (globalEffs, rest') -> do
+      rest' `shouldSatisfy` isRight
+      case rest' of
+        Right (localEffs, rest'') -> do
+          rest'' `shouldBe` Right ()
+          expectations ioEffs globalEffs localEffs
+        _ -> pure ()
+    _ -> pure ()
+
+
+test4Bracket
+  :: forall r
+   . Members '[
+      Output String  -- IO stateful effect
+    , State [String] -- Global pure stateful effect
+    , Trace          -- Local pure stateful effect
+    , Error String   -- IO exceptions
+    , Error Bool     -- Global exceptions
+    , Error ()       -- Local exceptions
+    , Resource
+    ] r
+  => Sem r ()
+test4Bracket = do
+  let
+    record :: String -> Sem r ()
+    record str = do
+      trace str
+      modify' (++[str])
+      output str
+
+  -- On no exceptions
+  bracket
+    (record "alloc pure")
+    (\_ -> record "dealloc pure")
+    (\_ -> record "use pure")
+
+  -- On IO exception
+  bracket
+    (record "alloc IO")
+    (\_ -> record "dealloc IO")
+    (\_ -> record "use IO" >> throw "")
+      `catch` \"" -> pure ()
+
+  -- On global exception
+  bracket
+    (record "alloc global")
+    (\_ -> record "dealloc global")
+    (\_ -> record "use global" >> throw True)
+      `catch` \True -> pure ()
+
+  -- On local exception
+  bracket
+    (record "alloc local")
+    (\_ -> record "dealloc local")
+    (\_ -> record "use local" >> throw ())
+      `catch` \() -> pure ()
+
+test4BracketOnError
+  :: forall r
+   . Members '[
+      Output String  -- IO stateful effect
+    , State [String] -- Global pure stateful effect
+    , Trace          -- Local pure stateful effect
+    , Error String   -- IO exceptions
+    , Error Bool     -- Global exceptions
+    , Error ()       -- Local exceptions
+    , Resource
+    ] r
+  => Sem r ()
+test4BracketOnError = do
+  let
+    record :: String -> Sem r ()
+    record str = do
+      trace str
+      modify' (++[str])
+      output str
+
+  -- On no exceptions
+  bracketOnError
+    (record "alloc pure")
+    (\_ -> record "dealloc pure")
+    (\_ -> record "use pure")
+
+  -- On IO exception
+  bracketOnError
+    (record "alloc IO")
+    (\_ -> record "dealloc IO")
+    (\_ -> record "use IO" >> throw "")
+      `catch` \"" -> pure ()
+
+  -- On global exception
+  bracketOnError
+    (record "alloc global")
+    (\_ -> record "dealloc global")
+    (\_ -> record "use global" >> throw True)
+      `catch` \True -> pure ()
+
+  -- On local exception
+  bracketOnError
+    (record "alloc local")
+    (\_ -> record "dealloc local")
+    (\_ -> record "use local" >> throw ())
+      `catch` \() -> pure ()
+
+runTest4Pure
+  :: Sem '[
+       Error ()
+     , Trace
+     , Resource
+     , Error Bool
+     , Output String
+     , Error String
+     , State [String]
+     , Embed IO
+     , Final IO
+     ] ()
+  -> IO ([String], Either String ([String], Either Bool ([String], Either () ())))
+runTest4Pure =
+    runFinal
+  . embedToFinal
+  . stateToIO @[String] []
+  . errorToIOFinal @String
+  . runOutputList @String
+  . runError @Bool
+  . runResource
+  . runTraceList
+  . runError @()
+
+runTest4Forklift
+  :: Sem '[
+       Error ()
+     , Trace
+     , Resource
+     , Error Bool
+     , Output String
+     , Error String
+     , State [String]
+     , Embed IO
+     , Final IO
+     ] ()
+  -> IO ([String], Either String ([String], Either Bool ([String], Either () ())))
+runTest4Forklift =
+    runFinal
+  . embedToFinal
+  . stateToIO @[String] []
+  . errorToIOFinal @String
+  . runOutputList @String
+  . runError @Bool
+  . resourceToIO
+  . runTraceList
+  . runError @()
+
+runTest4Final
+  :: Sem '[
+       Error ()
+     , Trace
+     , Resource
+     , Error Bool
+     , Output String
+     , Error String
+     , State [String]
+     , Embed IO
+     , Final IO
+     ] ()
+  -> IO ([String], Either String ([String], Either Bool ([String], Either () ())))
+runTest4Final =
+    runFinal
+  . embedToFinal
+  . stateToIO @[String] []
+  . errorToIOFinal @String
+  . runOutputList @String
+  . runError @Bool
+  . resourceToIOFinal
+  . runTraceList
+  . runError @()
