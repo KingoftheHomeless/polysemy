@@ -67,7 +67,7 @@ sequenceConcurrently t = traverse async t >>= traverse await
 --
 -- @since 1.0.0.0
 asyncToIO
-    :: Member (Embed IO) r
+    :: (Member (Embed IO) r, Member (Final IO) r)
     => Sem (Async ': r) a
     -> Sem r a
 asyncToIO m = withLowerToIO $ \lower _ -> lower $

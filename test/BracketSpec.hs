@@ -240,9 +240,10 @@ runTest = pure
         . runError @()
 
 runTest2
-  :: Sem '[Error (), Resource, State [Char], Trace, Output String, Embed IO] a
+  :: Sem '[Error (), Resource, State [Char], Trace, Output String, Embed IO, Final IO] a
   -> IO ([String], ([Char], Either () a))
-runTest2 = runM
+runTest2 = runFinal
+         . embedToFinal @IO
          . ignoreOutput
          . runTraceList
          . runState ""
@@ -284,17 +285,15 @@ testAllThree name k m = do
 testTheIOTwo
     :: String
     -> (([String], ([Char], Either () a)) -> Expectation)
-    -> (Sem '[Error (), Resource, State [Char], Trace, Output String, Embed IO] a)
+    -> (Sem '[Error (), Resource, State [Char], Trace, Output String, Embed IO, Final IO] a)
     -> Spec
 testTheIOTwo name k m = do
   describe name $ do
     it "via resourceToIO" $ do
       z <- runTest2 m
       k z
-    -- NOTE(sandy): This unsafeCoerces are safe, because we're just weakening
-    -- the end of the union
     it "via resourceToIOFinal" $ do
-      z <- runTest3 $ unsafeCoerce m
+      z <- runTest3 $ m
       k z
 
 

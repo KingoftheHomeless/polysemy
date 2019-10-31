@@ -11,6 +11,7 @@ import           Control.Concurrent.Chan.Unagi
 import           Control.Concurrent.MVar
 import           Control.Exception
 import           Polysemy.Internal
+import           Polysemy.Final
 import           Polysemy.Internal.Union
 
 
@@ -19,7 +20,7 @@ import           Polysemy.Internal.Union
 --
 -- @since 0.5.0.0
 data Forklift r = forall a. Forklift
-  { responseMVar :: MVar a
+  { responseMVar :: MVar (Either SomeException a)
   , request      :: Union r (Sem r) a
   }
 
@@ -30,7 +31,7 @@ data Forklift r = forall a. Forklift
 --
 -- @since 0.5.0.0
 runViaForklift
-    :: Member (Embed IO) r
+    :: (Member (Embed IO) r, Member (Final IO) r)
     => InChan (Forklift r)
     -> Sem r a
     -> IO a
@@ -38,10 +39,16 @@ runViaForklift chan = usingSem $ \u -> do
   case prj u of
     Just (Weaving (Embed m) s _ ex _) ->
       ex . (<$ s) <$> m
-    _ -> do
-      mvar <- newEmptyMVar
-      writeChan chan $ Forklift mvar u
-      takeMVar mvar
+    _ -> case prj u of
+      Just (Weaving (WithWeavingToFinal wav) s wv ex ins) ->
+        ex <$> wav s (runViaForklift chan . wv) ins
+      _ -> do
+        mvar <- newEmptyMVar
+        writeChan chan $ Forklift mvar u
+        res <- takeMVar mvar
+        case res of
+          Right a -> pure a
+          Left  e -> throwIO e
 {-# INLINE runViaForklift #-}
 
 
@@ -54,7 +61,7 @@ runViaForklift chan = usingSem $ \u -> do
 --
 -- @since 0.5.0.0
 withLowerToIO
-    :: Member (Embed IO) r
+    :: (Member (Embed IO) r, Member (Final IO) r)
     => ((forall x. Sem r x -> IO x) -> IO () -> IO a)
        -- ^ A lambda that takes the lowering function, and a finalizing 'IO'
        -- action to mark a the forked thread as being complete. The finalizing
@@ -75,7 +82,9 @@ withLowerToIO action = do
         case raced of
           Left () -> embed $ A.wait res
           Right (Forklift mvar req) -> do
-            resp <- liftSem req
+            resp <- withWeavingToFinal $ \s wv _ ->
+                     wv (liftSem (fmap Right req) <$ s)
+              `catch` \e -> pure (Left e <$ s)
             embed $ putMVar mvar $ resp
             me_b
       {-# INLINE me #-}

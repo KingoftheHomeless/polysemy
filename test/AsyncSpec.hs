@@ -14,7 +14,8 @@ import Test.Hspec
 spec :: Spec
 spec = describe "async" $ do
   it "should thread state and not lock" $ do
-    (ts, (s, r)) <- runM
+    (ts, (s, r)) <- runFinal
+                  . embedToFinal @IO
                   . runTraceList
                   . runState "hello"
                   . asyncToIO $ do
